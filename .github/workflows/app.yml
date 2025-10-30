@@ -5,11 +5,14 @@ on:
     branches: [ master ]
     paths-ignore:
       - '.github/ISSUE_TEMPLATE'
+  # 添加手动触发
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-20.04
-    if: ${{ !startsWith(github.event.head_commit.message, '[skip ci]') && github.repository_owner == 'RikkaApps' }}
+    # 移除了所有者限制，只保留跳过CI检查
+    if: ${{ !startsWith(github.event.head_commit.message, '[skip ci]') }}
 
     steps:
       - name: Checkout
