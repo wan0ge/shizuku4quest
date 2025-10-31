@@ -10,10 +10,10 @@ on:
 
 jobs:
   build:
-    # 修改：使用 ubuntu-latest，避免 20.04 队列问题
+    # 使用最新 Ubuntu runner，避免 20.04 队列过长
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # 修正条件判断：避免 github.event.head_commit 为空时报错
+    # 防止 github.event.head_commit.message 为空时报错
     if: ${{ !startsWith(github.event.head_commit.message || '', '[skip ci]') }}
 
     steps:
@@ -30,7 +30,7 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      # 新增：打印上下文信息，便于排查排队或跳过问题
+      # 调试：打印当前运行上下文
       - name: Print runner context
         run: |
           echo "Event: ${{ github.event_name }}"
@@ -48,7 +48,8 @@ jobs:
           echo KEYSTORE_ALIAS=${{ secrets.KEYSTORE_ALIAS }} >> signing.properties
           echo KEYSTORE_ALIAS_PASSWORD='${{ secrets.KEYSTORE_ALIAS_PASSWORD }}' >> signing.properties
           echo KEYSTORE_FILE=../key.jks >> signing.properties
-          echo ${{ secrets.KEYSTORE }} | base64 --decode > key.jks
+          # 修复：Base64 解码时必须加引号防止换行破坏
+          echo "${{ secrets.KEYSTORE }}" | base64 --decode > key.jks
 
       - name: Write temporary key
         if: hashFiles('key.jks') == '' && !steps.vars.outputs.HAS_SECRET
