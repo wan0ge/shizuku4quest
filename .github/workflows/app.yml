@@ -112,15 +112,21 @@ jobs:
       
       - name: Patch build.gradle for CI
         run: |
-          echo "Patching manager/build.gradle to disable resource shrinking..."
-          # 备份原文件
+          echo "Patching manager/build.gradle to disable resource optimization..."
           cp manager/build.gradle manager/build.gradle.backup
           
-          # 临时禁用 shrinkResources (如果该行存在)
-          sed -i 's/shrinkResources true/shrinkResources false/g' manager/build.gradle || true
+          # 禁用资源压缩和优化
+          sed -i 's/shrinkResources true/shrinkResources false/g' manager/build.gradle
+          sed -i 's/minifyEnabled true/minifyEnabled false/g' manager/build.gradle
           
-          echo "Checking if shrinkResources was modified:"
-          grep -n "shrinkResources" manager/build.gradle || echo "No shrinkResources found"
+          # 注释掉第89-99行的 collapseReleaseResourceNames 任务
+          sed -i '89,99 s/^/\/\/ /' manager/build.gradle
+          
+          # 注释掉第102行的 finalizedBy 调用
+          sed -i "102 s/tasks.getByName('optimizeReleaseResources').finalizedBy(collapseReleaseResourceNames)/\/\/ &/" manager/build.gradle
+          
+          echo "Modified build.gradle (lines 85-105):"
+          sed -n '85,105p' manager/build.gradle
 
       - name: Clean build
         run: |
