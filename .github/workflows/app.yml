@@ -55,6 +55,10 @@ jobs:
           echo "signing.properties content:"
           cat signing.properties
 
+      # ⬇️ 新增：强制清理构建缓存和中间文件
+      - name: Clean build files
+        run: ./gradlew cleany
+
       - name: Write temporary key
         if: hashFiles('key.jks') == ''
         run: |
