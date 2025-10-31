@@ -5,32 +5,29 @@ on:
     branches: [ master ]
     paths-ignore:
       - '.github/ISSUE_TEMPLATE'
-  # 添加手动触发
+  # 手动触发
   workflow_dispatch:
 
 jobs:
   build:
-    # 使用最新 Ubuntu runner，避免 20.04 队列过长
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # 防止 github.event.head_commit.message 为空时报错
     if: ${{ !startsWith(github.event.head_commit.message || '', '[skip ci]') }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
 
-      # 调试：打印当前运行上下文
       - name: Print runner context
         run: |
           echo "Event: ${{ github.event_name }}"
@@ -40,28 +37,44 @@ jobs:
           echo "Run ID: ${{ github.run_id }}"
           echo "Repository: ${{ github.repository }}"
 
-      - name: Write key
+      # 写入 keystore 文件和签名配置
+      - name: Write keystore
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
-          touch signing.properties
-          echo KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} >> signing.properties
-          echo KEYSTORE_ALIAS=${{ secrets.KEYSTORE_ALIAS }} >> signing.properties
-          echo KEYSTORE_ALIAS_PASSWORD='${{ secrets.KEYSTORE_ALIAS_PASSWORD }}' >> signing.properties
-          echo KEYSTORE_FILE=../key.jks >> signing.properties
-          # 修复：Base64 解码时必须加引号防止换行破坏
-          echo "${{ secrets.KEYSTORE }}" | base64 --decode > key.jks
+          echo "Writing keystore..."
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > key.jks
 
+          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> signing.properties
+          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> signing.properties
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> signing.properties
+          echo "KEYSTORE_FILE=../key.jks" >> signing.properties
+
+          echo "Keystore and signing.properties created:"
+          cat signing.properties
+
+      # 如果没有提供 keystore，则自动生成一个临时的测试 key
       - name: Write temporary key
-        if: hashFiles('key.jks') == '' && !steps.vars.outputs.HAS_SECRET
+        if: hashFiles('key.jks') == ''
         run: |
-          keytool -genkey -alias a -dname CN=_ -storepass passwd -keypass passwd -keystore key.jks
-          echo KEYSTORE_PASSWORD=passwd >> signing.properties
-          echo KEYSTORE_ALIAS=a >> signing.properties
-          echo KEYSTORE_ALIAS_PASSWORD=passwd >> signing.properties
-          echo KEYSTORE_FILE=../key.jks >> signing.properties
+          echo "Generating temporary debug key..."
+          keytool -genkeypair -v \
+            -keystore key.jks \
+            -storetype JKS \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -alias tempkey \
+            -storepass temp1234 \
+            -keypass temp1234 \
+            -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, ST=Temp, C=CN"
+
+          echo "KEYSTORE_PASSWORD=temp1234" >> signing.properties
+          echo "KEY_ALIAS=tempkey" >> signing.properties
+          echo "KEY_PASSWORD=temp1234" >> signing.properties
+          echo "KEYSTORE_FILE=../key.jks" >> signing.properties
 
       - name: Cache Gradle Dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
@@ -72,7 +85,7 @@ jobs:
             gradle-deps
 
       - name: Cache Gradle Build
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches/build-cache-*
@@ -87,9 +100,14 @@ jobs:
           echo 'org.gradle.parallel=true' >> gradle.properties
           echo 'org.gradle.vfs.watch=true' >> gradle.properties
           echo 'org.gradle.jvmargs=-Xmx2048m' >> gradle.properties
+
+          chmod +x gradlew
           ./gradlew :manager:assembleRelease :manager:assembleDebug
-          releaseName=`ls manager/build/outputs/apk/release/shizuku*-v*-release.apk | awk -F '(/|.apk)' '{print $6}'` && echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
-          debugName=`ls manager/build/outputs/apk/debug/shizuku*-v*-debug.apk | awk -F '(/|.apk)' '{print $6}'` && echo "debugName=$debugName" >> $GITHUB_OUTPUT
+
+          releaseName=$(ls manager/build/outputs/apk/release/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
+          debugName=$(ls manager/build/outputs/apk/debug/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
+          echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
+          echo "debugName=$debugName" >> $GITHUB_OUTPUT
 
       - name: Upload release
         if: success()
@@ -106,6 +124,7 @@ jobs:
           path: "manager/build/outputs/apk/debug/*.apk"
 
       - name: Upload mappings
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: mappings
