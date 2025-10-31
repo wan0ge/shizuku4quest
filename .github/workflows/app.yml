@@ -57,7 +57,7 @@ jobs:
 
       # ⬇️ 新增：强制清理构建缓存和中间文件
       - name: Clean build files
-        run: ./gradlew cleany
+        run: ./gradlew clean
 
       - name: Write temporary key
         if: hashFiles('key.jks') == ''
