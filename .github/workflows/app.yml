@@ -5,6 +5,7 @@ on:
     branches: [ master ]
     paths-ignore:
       - '.github/ISSUE_TEMPLATE'
+  # 手动触发
   workflow_dispatch:
 
 jobs:
@@ -36,25 +37,22 @@ jobs:
           echo "Run ID: ${{ github.run_id }}"
           echo "Repository: ${{ github.repository }}"
 
+      # 写入 keystore 文件和签名配置
       - name: Write keystore
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
           echo "Writing keystore..."
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > key.jks
 
-          touch signing.properties
           echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> signing.properties
-          echo "KEYSTORE_ALIAS=${{ secrets.KEY_ALIAS }}" >> signing.properties
           echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> signing.properties
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> signing.properties
           echo "KEYSTORE_FILE=../key.jks" >> signing.properties
 
-          # 双写一份,确保兼容 KEY_PASSWORD 与 KEYSTORE_ALIAS_PASSWORD 两种变量名
-          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> signing.properties
-          echo "KEYSTORE_ALIAS_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> signing.properties
-
-          echo "signing.properties content:"
+          echo "Keystore and signing.properties created:"
           cat signing.properties
 
+      # 如果没有提供 keystore，则自动生成一个临时的测试 key
       - name: Write temporary key
         if: hashFiles('key.jks') == ''
         run: |
@@ -71,10 +69,8 @@ jobs:
             -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, ST=Temp, C=CN"
 
           echo "KEYSTORE_PASSWORD=temp1234" >> signing.properties
-          echo "KEYSTORE_ALIAS=tempkey" >> signing.properties
           echo "KEY_ALIAS=tempkey" >> signing.properties
           echo "KEY_PASSWORD=temp1234" >> signing.properties
-          echo "KEYSTORE_ALIAS_PASSWORD=temp1234" >> signing.properties
           echo "KEYSTORE_FILE=../key.jks" >> signing.properties
 
       - name: Cache Gradle Dependencies
@@ -97,52 +93,16 @@ jobs:
           restore-keys: |
             gradle-builds
 
-      - name: Setup Gradle properties
-        run: |
-          echo 'org.gradle.caching=true' >> gradle.properties
-          echo 'org.gradle.parallel=false' >> gradle.properties
-          echo 'org.gradle.vfs.watch=false' >> gradle.properties
-          echo 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8' >> gradle.properties
-          echo 'org.gradle.daemon=false' >> gradle.properties
-          echo 'android.enableR8.fullMode=false' >> gradle.properties
-          echo 'android.enableJetifier=false' >> gradle.properties
-          echo 'android.useAndroidX=true' >> gradle.properties
-          echo "Gradle properties:"
-          cat gradle.properties
-      
-      - name: Patch build.gradle for CI
-        run: |
-          echo "Patching manager/build.gradle to disable resource optimization..."
-          cp manager/build.gradle manager/build.gradle.backup
-          
-          # 禁用资源压缩和优化
-          sed -i 's/shrinkResources true/shrinkResources false/g' manager/build.gradle
-          sed -i 's/minifyEnabled true/minifyEnabled false/g' manager/build.gradle
-          
-          # 注释掉第89-99行的 collapseReleaseResourceNames 任务
-          sed -i '89,99 s/^/\/\/ /' manager/build.gradle
-          
-          # 注释掉第102行的 finalizedBy 调用
-          sed -i "102 s/tasks.getByName('optimizeReleaseResources').finalizedBy(collapseReleaseResourceNames)/\/\/ &/" manager/build.gradle
-          
-          echo "Modified build.gradle (lines 85-105):"
-          sed -n '85,105p' manager/build.gradle
-
-      - name: Clean build
-        run: |
-          chmod +x gradlew
-          ./gradlew clean --no-daemon
-
       - name: Build with Gradle
         id: buildWithGradle
         run: |
-          # 先构建 debug 版本测试
-          echo "Building debug APK..."
-          ./gradlew :manager:assembleDebug --no-daemon --stacktrace
-          
-          # 再构建 release 版本
-          echo "Building release APK..."
-          ./gradlew :manager:assembleRelease --no-daemon --stacktrace --info
+          echo 'org.gradle.caching=true' >> gradle.properties
+          echo 'org.gradle.parallel=true' >> gradle.properties
+          echo 'org.gradle.vfs.watch=true' >> gradle.properties
+          echo 'org.gradle.jvmargs=-Xmx2048m' >> gradle.properties
+
+          chmod +x gradlew
+          ./gradlew :manager:assembleRelease :manager:assembleDebug
 
           releaseName=$(ls manager/build/outputs/apk/release/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
           debugName=$(ls manager/build/outputs/apk/debug/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
