@@ -43,7 +43,7 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            resourcenameShrinking = false
+            enableResourceNameShrinking = false
         }
     }
     externalNativeBuild {
