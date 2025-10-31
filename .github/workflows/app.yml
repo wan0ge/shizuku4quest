@@ -1,4 +1,4 @@
-name: Build Android App
+name: App
 
 on:
   push:
@@ -9,24 +9,17 @@ on:
 
 jobs:
   build:
-    name: Build APKs
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: ${{ !startsWith(github.event.head_commit.message || '', '[skip ci]') }}
 
     steps:
-      # ------------------------------
-      # 1️⃣ 检出仓库代码
-      # ------------------------------
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: 'recursive'
           fetch-depth: 0
 
-      # ------------------------------
-      # 2️⃣ 安装 Java 环境
-      # ------------------------------
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -34,126 +27,109 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      # ------------------------------
-      # 3️⃣ 打印构建上下文（调试用）
-      # ------------------------------
       - name: Print runner context
         run: |
           echo "Event: ${{ github.event_name }}"
           echo "Ref: ${{ github.ref }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Message: ${{ github.event.head_commit.message }}"
+          echo "Commit message: ${{ github.event.head_commit.message }}"
           echo "Actor: ${{ github.actor }}"
-          echo "Repo: ${{ github.repository }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Repository: ${{ github.repository }}"
 
-      # ------------------------------
-      # 4️⃣ 写入签名文件
-      # ------------------------------
-      - name: Write keystore and signing.properties
+      - name: Write keystore
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
-          echo "Preparing keystore..."
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > key.jks
-            echo "✅ Keystore restored from secret"
-          else
-            echo "⚠️ No keystore found, generating temporary debug key..."
-            keytool -genkeypair -v \
-              -keystore key.jks \
-              -storetype JKS \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -alias tempkey \
-              -storepass temp1234 \
-              -keypass temp1234 \
-              -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, ST=Temp, C=CN"
-          fi
+          echo "Writing keystore..."
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > key.jks
 
-          echo "Writing signing.properties..."
-          cat <<EOF > signing.properties
-          KEYSTORE_FILE=../key.jks
-          KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD || 'temp1234' }}
-          KEY_ALIAS=${{ secrets.KEY_ALIAS || 'tempkey' }}
-          KEYSTORE_ALIAS=${{ secrets.KEY_ALIAS || 'tempkey' }}
-          KEY_PASSWORD=${{ secrets.KEY_PASSWORD || 'temp1234' }}
-          KEYSTORE_ALIAS_PASSWORD=${{ secrets.KEY_PASSWORD || 'temp1234' }}
-          EOF
+          touch signing.properties
+          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> signing.properties
+          echo "KEYSTORE_ALIAS=${{ secrets.KEY_ALIAS }}" >> signing.properties
+          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> signing.properties
+          echo "KEYSTORE_FILE=../key.jks" >> signing.properties
 
-          echo "✅ signing.properties written successfully."
+          # 双写一份，确保兼容 KEY_PASSWORD 与 KEYSTORE_ALIAS_PASSWORD 两种变量名
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> signing.properties
+          echo "KEYSTORE_ALIAS_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> signing.properties
+
+          echo "signing.properties content:"
           cat signing.properties
 
-      # ------------------------------
-      # 5️⃣ 缓存 Gradle 依赖
-      # ------------------------------
-      - name: Cache Gradle dependencies
+      - name: Write temporary key
+        if: hashFiles('key.jks') == ''
+        run: |
+          echo "Generating temporary debug key..."
+          keytool -genkeypair -v \
+            -keystore key.jks \
+            -storetype JKS \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -alias tempkey \
+            -storepass temp1234 \
+            -keypass temp1234 \
+            -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, ST=Temp, C=CN"
+
+          echo "KEYSTORE_PASSWORD=temp1234" >> signing.properties
+          echo "KEYSTORE_ALIAS=tempkey" >> signing.properties
+          echo "KEY_ALIAS=tempkey" >> signing.properties
+          echo "KEY_PASSWORD=temp1234" >> signing.properties
+          echo "KEYSTORE_ALIAS_PASSWORD=temp1234" >> signing.properties
+          echo "KEYSTORE_FILE=../key.jks" >> signing.properties
+
+      - name: Cache Gradle Dependencies
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
             !~/.gradle/caches/build-cache-*
-          key: gradle-deps-${{ hashFiles('**/build.gradle') }}
-          restore-keys: gradle-deps-
+          key: gradle-deps-app-${{ hashFiles('**/build.gradle') }}
+          restore-keys: |
+            gradle-deps
 
-      # ------------------------------
-      # 6️⃣ 缓存构建缓存
-      # ------------------------------
-      - name: Cache Gradle build cache
+      - name: Cache Gradle Build
         uses: actions/cache@v4
         with:
-          path: ~/.gradle/caches/build-cache-*
-          key: gradle-build-${{ github.sha }}
-          restore-keys: gradle-build-
+          path: |
+            ~/.gradle/caches/build-cache-*
+          key: gradle-builds-app-${{ github.sha }}
+          restore-keys: |
+            gradle-builds
 
-      # ------------------------------
-      # 7️⃣ 构建 APK
-      # ------------------------------
-      - name: Build APKs
+      - name: Build with Gradle
         id: buildWithGradle
         run: |
-          echo "Configuring Gradle performance options..."
           echo 'org.gradle.caching=true' >> gradle.properties
           echo 'org.gradle.parallel=true' >> gradle.properties
           echo 'org.gradle.vfs.watch=true' >> gradle.properties
           echo 'org.gradle.jvmargs=-Xmx2048m' >> gradle.properties
 
           chmod +x gradlew
-          echo "🚀 Starting Gradle build..."
-          ./gradlew :manager:assembleRelease :manager:assembleDebug --stacktrace
+          ./gradlew :manager:assembleRelease :manager:assembleDebug
 
-          releaseName=$(basename $(ls manager/build/outputs/apk/release/*.apk) .apk)
-          debugName=$(basename $(ls manager/build/outputs/apk/debug/*.apk) .apk)
-
+          releaseName=$(ls manager/build/outputs/apk/release/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
+          debugName=$(ls manager/build/outputs/apk/debug/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
           echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
           echo "debugName=$debugName" >> $GITHUB_OUTPUT
-          echo "✅ Build completed successfully."
 
-      # ------------------------------
-      # 8️⃣ 上传 Release APK
-      # ------------------------------
-      - name: Upload Release APK
+      - name: Upload release
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.buildWithGradle.outputs.releaseName }}
-          path: manager/build/outputs/apk/release/*.apk
+          path: "manager/build/outputs/apk/release/*.apk"
 
-      # ------------------------------
-      # 9️⃣ 上传 Debug APK
-      # ------------------------------
-      - name: Upload Debug APK
+      - name: Upload debug
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.buildWithGradle.outputs.debugName }}
-          path: manager/build/outputs/apk/debug/*.apk
+          path: "manager/build/outputs/apk/debug/*.apk"
 
-      # ------------------------------
-      # 🔟 上传混淆映射文件
-      # ------------------------------
-      - name: Upload Proguard mappings
+      - name: Upload mappings
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: mappings
-          path: manager/build/outputs/mapping/release
+          path: "manager/build/outputs/mapping/release"
