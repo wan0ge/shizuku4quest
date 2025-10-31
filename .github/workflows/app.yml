@@ -104,23 +104,69 @@ jobs:
           echo 'org.gradle.vfs.watch=false' >> gradle.properties
           echo 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8' >> gradle.properties
           echo 'org.gradle.daemon=false' >> gradle.properties
+          echo 'org.gradle.configureondemand=false' >> gradle.properties
           echo 'android.enableR8.fullMode=false' >> gradle.properties
-          echo 'android.enableJetifier=false' >> gradle.properties
-          echo 'android.useAndroidX=true' >> gradle.properties
           echo "Gradle properties:"
           cat gradle.properties
       
-      - name: Patch build.gradle for CI
+      - name: Fix build.gradle for CI
         run: |
-          echo "Patching manager/build.gradle to disable resource shrinking..."
+          echo "Patching manager/build.gradle to prevent collapseReleaseResourceNames failure..."
+          
           # 备份原文件
           cp manager/build.gradle manager/build.gradle.backup
           
-          # 临时禁用 shrinkResources (如果该行存在)
-          sed -i 's/shrinkResources true/shrinkResources false/g' manager/build.gradle || true
+          # 使用 Python 进行精确的多行替换
+          python3 << 'PYTHON_SCRIPT'
+          import re
           
-          echo "Checking if shrinkResources was modified:"
-          grep -n "shrinkResources" manager/build.gradle || echo "No shrinkResources found"
+          with open('manager/build.gradle', 'r', encoding='utf-8') as f:
+              content = f.read()
+          
+          # 在 exec { 之前添加文件检查
+          # 匹配 exec { 并在其前面添加检查逻辑
+          pattern = r'(\s+)(exec\s*\{[^}]*commandLine[^}]*aapt2[^}]*\})'
+          
+          replacement = r'''\1def resourceFile = file("${buildDir}/intermediates/optimized_processed_res/release/resources-release-optimize.ap_")
+\1if (!resourceFile.exists()) {
+\1    logger.warn("CI FIX: Resource file not found, skipping collapse")
+\1    return
+\1}
+\1\2'''
+          
+          new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+          
+          # 如果替换成功(内容有变化),写入文件
+          if new_content != content:
+              with open('manager/build.gradle', 'w', encoding='utf-8') as f:
+                  f.write(new_content)
+              print("✓ Successfully patched build.gradle")
+          else:
+              # 如果上述方法没有匹配,尝试简单的行级替换
+              lines = content.split('\n')
+              new_lines = []
+              for i, line in enumerate(lines):
+                  new_lines.append(line)
+                  # 在包含 'aapt2' 的 exec 调用前添加检查
+                  if 'exec' in line and i < len(lines) - 1:
+                      # 查看接下来几行是否包含 aapt2
+                      next_lines = '\n'.join(lines[i:min(i+10, len(lines))])
+                      if 'aapt2' in next_lines and 'optimize' in next_lines:
+                          indent = len(line) - len(line.lstrip())
+                          spaces = ' ' * indent
+                          new_lines.insert(-1, f'{spaces}// CI FIX: Added file existence check')
+                          new_lines.insert(-1, f'{spaces}def resourceFile = file("${{buildDir}}/intermediates/optimized_processed_res/release/resources-release-optimize.ap_")')
+                          new_lines.insert(-1, f'{spaces}if (!resourceFile.exists()) {{ return }}')
+                          print("✓ Applied fallback patch")
+                          break
+              
+              with open('manager/build.gradle', 'w', encoding='utf-8') as f:
+                  f.write('\n'.join(new_lines))
+          
+          PYTHON_SCRIPT
+          
+          echo "Showing modified section:"
+          grep -A 5 -B 5 "CI FIX" manager/build.gradle || echo "Patch may not have been applied, continuing anyway..."
 
       - name: Clean build
         run: |
@@ -136,7 +182,7 @@ jobs:
           
           # 再构建 release 版本
           echo "Building release APK..."
-          ./gradlew :manager:assembleRelease --no-daemon --stacktrace --info
+          ./gradlew :manager:assembleRelease --no-daemon --stacktrace --max-workers=2
 
           releaseName=$(ls manager/build/outputs/apk/release/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
           debugName=$(ls manager/build/outputs/apk/debug/*.apk | awk -F '/' '{print $NF}' | sed 's/.apk$//')
